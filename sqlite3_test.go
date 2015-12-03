@@ -1,0 +1,175 @@
+// Package sql tests assume SQLlite3 installed, and the following table
+// definition installed:
+//
+// CREATE TABLE `testtable` (
+//     `id` VARCHAR(128) PRIMARY KEY,
+//     `etag` VARCHAR(128),
+//     `updated` DATE NULL,
+//    `f1` VARCHAR(128),
+//    `f2` INTEGER
+// );
+package sqlite3
+
+import (
+	"testing"
+
+	"database/sql"
+	_ "github.com/mattn/go-sqlite3"
+
+	"golang.org/x/net/context"
+
+	"code.google.com/p/go-uuid/uuid"
+
+	"github.com/rs/rest-layer/resource"
+	"github.com/rs/rest-layer/schema"
+	. "github.com/smartystreets/goconvey/convey"
+)
+
+const (
+	DB_DRIVER   = "sqlite3"
+	DB_FILE     = "./test.db"
+	DB_TABLE    = "testtable"
+	DB_UP_DDL   = "CREATE TABLE `" + DB_TABLE + "` (`id` VARCHAR(128) PRIMARY KEY,`etag` VARCHAR(128),`updated` VARCHAR(128),`f1` VARCHAR(128),`f2` INTEGER);"
+	DB_DOWN_DDL = "DROP TABLE `" + DB_TABLE + "`;"
+)
+
+var i1, _ = item("foo", 1)
+var i2, _ = item("bar", 2)
+
+// handler returns a new handler with the database and table information,
+// or an error.
+func handler() (*Handler, error) {
+	db, err := sql.Open(DB_DRIVER, DB_FILE)
+	if err != nil {
+		return nil, err
+	}
+	return NewHandler(db, DB_TABLE), nil
+}
+
+func item(f1 string, f2 int) (*resource.Item, error) {
+	p := make(map[string]interface{})
+	p["id"] = uuid.New()
+	p["f1"] = f1
+	p["f2"] = f2
+	return resource.NewItem(p)
+}
+
+func callGetSelect(h *Handler, q schema.Query, s string, v schema.Validator, page, perPage int) (string, error) {
+	l := resource.NewLookup()
+	l.AddQuery(q)
+	l.SetSort(s, v)
+	return getSelect(h, l, page, perPage)
+}
+
+// TestModel tests the insert functionality.
+func TestModel(t *testing.T) {
+	Convey("Get a handler should work", t, func() {
+		h, err := handler()
+		So(err, ShouldBeNil)
+		h.session.Exec(DB_DOWN_DDL)
+		_, err = h.session.Exec(DB_UP_DDL)
+		So(err, ShouldBeNil)
+
+		Convey(`Insert operation should return nil upon success`, func() {
+			var l = []*resource.Item{i1, i2}
+			result := h.Insert(context.Background(), l)
+			So(result, ShouldBeNil)
+
+			Convey("Find should return an item list", func() {
+				l := resource.NewLookup()
+				Convey("Found item should match i1", func() {
+					q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+					l.AddQuery(q)
+					result, err := h.Find(context.Background(), l, 1, 10)
+					So(err, ShouldBeNil)
+					So(result.Total, ShouldEqual, 1)
+					So(result.Page, ShouldEqual, 1)
+					So(len(result.Items), ShouldEqual, 1)
+					So(result.Items[0].ID, ShouldEqual, i1.ID)
+					So(result.Items[0].ETag, ShouldEqual, i1.ETag)
+					So(result.Items[0].Payload["id"], ShouldEqual, i1.Payload["id"])
+					So(result.Items[0].Payload["f1"], ShouldEqual, i1.Payload["f1"])
+					So(result.Items[0].Payload["f2"], ShouldEqual, i1.Payload["f2"])
+					So(result.Items[0].Updated, ShouldResemble, i1.Updated)
+					//So(result.Items[0].Payload, ShouldResemble, i2.Payload) // fails, existing PR on assertions may fix
+				})
+				Convey("Found item should match i2", func() {
+					q := schema.Query{schema.Equal{Field: "f1", Value: "bar"}}
+					l.AddQuery(q)
+					result, err := h.Find(context.Background(), l, 1, 10)
+					So(err, ShouldBeNil)
+					So(result.Total, ShouldEqual, 1)
+					So(result.Page, ShouldEqual, 1)
+					So(len(result.Items), ShouldEqual, 1)
+					So(result.Items[0].ID, ShouldEqual, i2.ID)
+					So(result.Items[0].ETag, ShouldEqual, i2.ETag)
+					So(result.Items[0].Payload["id"], ShouldEqual, i2.Payload["id"])
+					So(result.Items[0].Payload["f1"], ShouldEqual, i2.Payload["f1"])
+					So(result.Items[0].Payload["f2"], ShouldEqual, i2.Payload["f2"])
+					So(result.Items[0].Updated, ShouldResemble, i2.Updated)
+					//So(result.Items[0].Payload, ShouldResemble, i2.Payload) // fails, existing PR on assertions may fix
+				})
+			})
+
+			Convey(`Successful delete operations should return nil`, func() {
+				result = h.Delete(context.Background(), i1)
+				So(result, ShouldBeNil)
+				result = h.Delete(context.Background(), i2)
+				So(result, ShouldBeNil)
+
+				Convey(`Attempt to delete missing id should return resource.ErrNotFound`, func() {
+					result = h.Delete(context.Background(), i2)
+					So(result, ShouldEqual, resource.ErrNotFound)
+				})
+			})
+
+			Convey(`Successful clear operations should return the number of affected rows`, func() {
+				l := resource.NewLookup()
+				q := schema.Query{schema.Or{schema.Equal{Field: "f1", Value: "foo"}, schema.Equal{Field: "f1", Value: "bar"}}}
+				l.AddQuery(q)
+				result, err := h.Clear(context.Background(), l)
+				So(err, ShouldBeNil)
+				So(result, ShouldEqual, 2)
+				result, err = h.Clear(context.Background(), l)
+				So(err, ShouldBeNil)
+				So(result, ShouldEqual, 0)
+
+				Convey(`Attempt to clear missing rows should return 0`, func() {
+					result, err = h.Clear(context.Background(), l)
+					So(err, ShouldBeNil)
+					So(result, ShouldEqual, 0)
+				})
+			})
+
+			Convey("SELECT statements should be correct", func() {
+				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
+				s, err := callGetSelect(h, q, "-f1,f1", v, 1, -1)
+				So(err, ShouldBeNil)
+				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 IS 'foo' ORDER BY f1 DESC,f1;")
+			})
+
+			Convey("SELECT statements with pagination should be correct", func() {
+				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
+				s, err := callGetSelect(h, q, "-f1,f1", v, 1, 10)
+				So(err, ShouldBeNil)
+				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 IS 'foo' ORDER BY f1 DESC,f1 LIMIT 10 OFFSET 0;")
+			})
+
+			Convey("DELETE statements should be correct", func() {
+				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+				So(err, ShouldBeNil)
+				s, err := callGetDelete(h, q)
+				So(err, ShouldBeNil)
+				So(s, ShouldEqual, "DELETE FROM "+h.tableName+" WHERE f1 IS 'foo';")
+			})
+
+		})
+
+		//Reset(func() {
+		//	_, err = h.session.Exec(DB_DOWN_DDL)
+		//	So(err, ShouldBeNil)
+		//})
+	})
+}
