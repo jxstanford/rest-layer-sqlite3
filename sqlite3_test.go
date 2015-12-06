@@ -23,6 +23,7 @@ import (
 	"github.com/rs/rest-layer/resource"
 	"github.com/rs/rest-layer/schema"
 	. "github.com/smartystreets/goconvey/convey"
+	"fmt"
 )
 
 const (
@@ -91,7 +92,7 @@ func TestModel(t *testing.T) {
 					So(result.Items[0].Payload["id"], ShouldEqual, i1.Payload["id"])
 					So(result.Items[0].Payload["f1"], ShouldEqual, i1.Payload["f1"])
 					So(result.Items[0].Payload["f2"], ShouldEqual, i1.Payload["f2"])
-					So(result.Items[0].Updated, ShouldResemble, i1.Updated)
+					So(fmt.Sprintf("%v", result.Items[0].Updated), ShouldEqual, fmt.Sprintf("%v", i1.Updated))
 					//So(result.Items[0].Payload, ShouldResemble, i2.Payload) // fails, existing PR on assertions may fix
 				})
 				Convey("Found item should match i2", func() {
@@ -107,7 +108,7 @@ func TestModel(t *testing.T) {
 					So(result.Items[0].Payload["id"], ShouldEqual, i2.Payload["id"])
 					So(result.Items[0].Payload["f1"], ShouldEqual, i2.Payload["f1"])
 					So(result.Items[0].Payload["f2"], ShouldEqual, i2.Payload["f2"])
-					So(result.Items[0].Updated, ShouldResemble, i2.Updated)
+					So(fmt.Sprintf("%v", result.Items[0].Updated), ShouldEqual, fmt.Sprintf("%v", i2.Updated))
 					//So(result.Items[0].Payload, ShouldResemble, i2.Payload) // fails, existing PR on assertions may fix
 				})
 			})
