@@ -32,7 +32,17 @@ func TestLookups(t *testing.T) {
 		// equality and type handling
 		s, err := callGetQuery(schema.Query{schema.Equal{Field: "f1", Value: "foo"}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "f1 IS 'foo'")
+		So(s, ShouldEqual, "f1 LIKE 'foo' ESCAPE '\\'")
+
+		// _ is not interpreted as a single character wildcard
+		s, err = callGetQuery(schema.Query{schema.Equal{Field: "f1", Value: "foo_bar"}})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, "f1 LIKE 'foo\\_bar' ESCAPE '\\'")
+
+		// * is interpreted as a multicharacter wildcard
+		s, err = callGetQuery(schema.Query{schema.Equal{Field: "f1", Value: "foo*bar"}})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, "f1 LIKE 'foo%bar' ESCAPE '\\'")
 
 		s, err = callGetQuery(schema.Query{schema.Equal{Field: "id", Value: 10}})
 		So(err, ShouldBeNil)
@@ -53,7 +63,17 @@ func TestLookups(t *testing.T) {
 		// inequality
 		s, err = callGetQuery(schema.Query{schema.NotEqual{Field: "f1", Value: "foo"}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "f1 IS NOT 'foo'")
+		So(s, ShouldEqual, "f1 NOT LIKE 'foo' ESCAPE '\\'")
+
+		// _ is not interpreted as a single character wildcard
+		s, err = callGetQuery(schema.Query{schema.NotEqual{Field: "f1", Value: "foo_bar"}})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, "f1 NOT LIKE 'foo\\_bar' ESCAPE '\\'")
+
+		// * is interpreted as a multicharacter wildcard
+		s, err = callGetQuery(schema.Query{schema.NotEqual{Field: "f1", Value: "foo*bar"}})
+		So(err, ShouldBeNil)
+		So(s, ShouldEqual, "f1 NOT LIKE 'foo%bar' ESCAPE '\\'")
 
 		s, err = callGetQuery(schema.Query{schema.GreaterThan{Field: "f1", Value: 1}})
 		So(err, ShouldBeNil)
@@ -83,10 +103,10 @@ func TestLookups(t *testing.T) {
 		// simple logical operators
 		s, err = callGetQuery(schema.Query{schema.And{schema.Equal{Field: "id", Value: 10}, schema.Equal{Field: "f1", Value: "foo"}}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "(id IS 10 AND f1 IS 'foo')")
+		So(s, ShouldEqual, "(id IS 10 AND f1 LIKE 'foo' ESCAPE '\\')")
 		s, err = callGetQuery(schema.Query{schema.Or{schema.Equal{Field: "id", Value: 10}, schema.Equal{Field: "f1", Value: "foo"}}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "(id IS 10 OR f1 IS 'foo')")
+		So(s, ShouldEqual, "(id IS 10 OR f1 LIKE 'foo' ESCAPE '\\')")
 
 		// compound logical operators
 		s, err = callGetQuery(schema.Query{
@@ -97,7 +117,7 @@ func TestLookups(t *testing.T) {
 					schema.Equal{Field: "id", Value: 10},
 					schema.Equal{Field: "f1", Value: "foo"}}}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "(id IS 10 AND f1 IS 'foo' AND (id IS 10 OR f1 IS 'foo'))")
+		So(s, ShouldEqual, "(id IS 10 AND f1 LIKE 'foo' ESCAPE '\\' AND (id IS 10 OR f1 LIKE 'foo' ESCAPE '\\'))")
 
 		s, err = callGetQuery(schema.Query{
 			schema.Or{
@@ -107,7 +127,7 @@ func TestLookups(t *testing.T) {
 					schema.Equal{Field: "id", Value: 10},
 					schema.Equal{Field: "f1", Value: "foo"}}}})
 		So(err, ShouldBeNil)
-		So(s, ShouldEqual, "(id IS 10 OR f1 IS 'foo' OR (id IS 10 AND f1 IS 'foo'))")
+		So(s, ShouldEqual, "(id IS 10 OR f1 LIKE 'foo' ESCAPE '\\' OR (id IS 10 AND f1 LIKE 'foo' ESCAPE '\\'))")
 	})
 
 	Convey("Sorts should do the right thing", t, func() {

@@ -29,7 +29,7 @@ const (
 	DB_DRIVER   = "sqlite3"
 	DB_FILE     = "./test.db"
 	DB_TABLE    = "testtable"
-	DB_UP_DDL   = "CREATE TABLE `" + DB_TABLE + "` (`id` VARCHAR(128) PRIMARY KEY,`etag` VARCHAR(128),`updated` VARCHAR(128),`f1` VARCHAR(128),`f2` INTEGER);"
+	DB_UP_DDL   = "CREATE TABLE `" + DB_TABLE + "` (`id` VARCHAR(128) PRIMARY KEY,`etag` VARCHAR(128),`updated` VARCHAR(128),`created` VARCHAR(128),`f1` VARCHAR(128),`f2` INTEGER);"
 	DB_DOWN_DDL = "DROP TABLE `" + DB_TABLE + "`;"
 )
 
@@ -49,6 +49,7 @@ func handler() (*Handler, error) {
 func item(f1 string, f2 int) (*resource.Item, error) {
 	p := make(map[string]interface{})
 	p["id"] = uuid.New()
+	p["created"] = "2006-01-02 15:04:05.99999999 -0700 MST"
 	p["f1"] = f1
 	p["f2"] = f2
 	return resource.NewItem(p)
@@ -146,15 +147,33 @@ func TestModel(t *testing.T) {
 				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
 				s, err := callGetSelect(h, q, "-f1,f1", v, 1, -1)
 				So(err, ShouldBeNil)
-				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 IS 'foo' ORDER BY f1 DESC,f1;")
+				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\' ORDER BY f1 DESC,f1;")
 			})
+
 
 			Convey("SELECT statements with pagination should be correct", func() {
 				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
 				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
 				s, err := callGetSelect(h, q, "-f1,f1", v, 1, 10)
 				So(err, ShouldBeNil)
-				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 IS 'foo' ORDER BY f1 DESC,f1 LIMIT 10 OFFSET 0;")
+				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\' ORDER BY f1 DESC,f1 LIMIT 10 OFFSET 0;")
+			})
+
+			Convey("UPDATE statements should be correct", func() {
+				var u, upd, etag, id string
+				var testItem, _ = item("foo", 1)
+				delete(testItem.Payload, "created")
+				var err error
+				id, err = valueToString(testItem.ID)
+				So(err, ShouldBeNil)
+				etag, err = valueToString(testItem.ETag)
+				So(err, ShouldBeNil)
+				upd, err = valueToString(testItem.Updated)
+				So(err, ShouldBeNil)
+
+				u, err = getUpdate(h, testItem, testItem)
+				So(err, ShouldBeNil)
+				So(u, ShouldEqual, "UPDATE OR ROLLBACK "+h.tableName+" SET etag="+etag+",updated="+upd+",f1='foo',f2=1 WHERE id="+id+" AND etag="+etag+";")
 			})
 
 			Convey("DELETE statements should be correct", func() {
@@ -162,10 +181,11 @@ func TestModel(t *testing.T) {
 				So(err, ShouldBeNil)
 				s, err := callGetDelete(h, q)
 				So(err, ShouldBeNil)
-				So(s, ShouldEqual, "DELETE FROM "+h.tableName+" WHERE f1 IS 'foo';")
+				So(s, ShouldEqual, "DELETE FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\';")
 			})
 
 		})
+
 
 		//Reset(func() {
 		//	_, err = h.session.Exec(DB_DOWN_DDL)

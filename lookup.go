@@ -6,6 +6,7 @@ import (
 	"github.com/rs/rest-layer/resource"
 	"github.com/rs/rest-layer/schema"
 	"time"
+	"strings"
 )
 
 // getQuery returns the WHERE clause when given a Lookup
@@ -62,13 +63,27 @@ func translateQuery(q schema.Query) (string, error) {
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
-			str += t.Field + " IS " + v
+			switch t.Value.(type) {
+			case string:
+				v = strings.Replace(v, "*", "%", -1)
+				v = strings.Replace(v, "_", "\\_", -1)
+				str += t.Field + " LIKE " + v + " ESCAPE '\\'"
+			default:
+				str += t.Field + " IS " + v
+			}
 		case schema.NotEqual:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
-			str += t.Field + " IS NOT " + v
+			switch t.Value.(type) {
+			case string:
+				v = strings.Replace(v, "*", "%", -1)
+				v = strings.Replace(v, "_", "\\_", -1)
+				str += t.Field + " NOT LIKE " + v + " ESCAPE '\\'"
+			default:
+				str += t.Field + " IS NOT " + v
+			}
 		case schema.GreaterThan:
 			v, err := valueToString(t.Value)
 			if err != nil {

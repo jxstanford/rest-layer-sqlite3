@@ -13,6 +13,7 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"time"
+	"github.com/rs/rest-layer/schema"
 )
 
 const (
@@ -139,22 +140,52 @@ func (h *Handler) Insert(ctx context.Context, items []*resource.Item) error {
 	return nil
 }
 
-// Update replace an item in the backend store by a new version. The ResourceHandler must
-// ensure that the original item exists in the database and has the same Etag field.
-// This check should be performed atomically. If the original item is not
-// found, a resource.ErrNotFound must be returned. If the etags don't match, a
-// resource.ErrConflict must be returned.
-//
-// The item payload must be stored together with the etag and the updated field.
-// The item.ID and the payload["id"] is guaranteed to be identical, so there's not need
-// to store both.
-//
-// If the storage of the data is not immediate, the method must listen for cancellation
-// on the passed ctx. If the operation is stopped due to context cancellation, the
-// function must return the result of the ctx.Err() method.
+// Update replaces an item in the backend store with a new version. If the original
+// item is not found, a resource.ErrNotFound is returned. If the etags don't match, a
+// resource.ErrConflict is returned.
 func (h *Handler) Update(ctx context.Context, item *resource.Item, original *resource.Item) error {
 
-	return resource.ErrNotFound
+	// begin a database transaction
+	txPtr, err := h.session.Begin()
+	if err != nil {
+		log.WithField("error", err).Warn("Error starting update transaction.")
+		return err
+	}
+
+	// get the original item
+	l := resource.NewLookup()
+	q := schema.Query{schema.Equal{Field: "id", Value: original.ID}}
+	l.AddQuery(q)
+	s, err := getSelect(h, l, 1, 1)
+	if err != nil {
+		txPtr.Rollback()
+		log.WithField("error", err).Warn("Error constructing select to retreive original record.")
+		return err
+	}
+
+	err = compareEtags(h, original.ID, original.ETag)
+	if err != nil {
+		txPtr.Rollback()
+		log.WithField("error", err).Warn("Error comparing ETags.")
+		return err
+	}
+
+	s, err = getUpdate(h, item, original)
+	if err != nil {
+		txPtr.Rollback()
+		log.WithField("error", err).Warn("Error creating update statement.")
+		return err
+	}
+	_, err = h.session.Exec(s)
+	if err != nil {
+		txPtr.Rollback()
+		log.WithField("error", err).Warn("Error executing update statement.")
+		return err
+	}
+
+	// update succeeded, commit the transaction.
+	txPtr.Commit()
+	return nil
 }
 
 // Delete deletes the provided item by its ID. The Etag of the item stored in the
@@ -179,33 +210,11 @@ func (h *Handler) Delete(ctx context.Context, item *resource.Item) error {
 		return err
 	}
 
-	// query for record with the same id, and return ErrNotFound if we don't.
-	var etag string
-	err = h.session.QueryRow(
-		fmt.Sprintf("SELECT etag FROM %s WHERE id = '%s'", h.tableName, item.ID)).Scan(&etag)
+	err = compareEtags(h, item.ID, item.ETag)
 	if err != nil {
-		switch {
-		case err.Error() == SQL_NOTFOUND_ERR:
-			txPtr.Rollback()
-			return resource.ErrNotFound
-		default:
-			txPtr.Rollback()
-			log.WithFields(log.Fields{
-				"id":    item.ID,
-				"error": err,
-			}).Warn("Error querying record to delete.")
-			return err
-		}
-	}
-
-	// compare the etags to ensure that someone else hasn't scooped us.
-	if etag != item.ETag {
 		txPtr.Rollback()
-		log.WithFields(log.Fields{
-			"id":    item.ID,
-			"error": err,
-		}).Warn("ETag of record to delete does not match the one supplied.")
-		return resource.ErrConflict
+		log.WithField("error", err).Warn("Error comparing ETags.")
+		return err
 	}
 
 	// prepare and execute the delete statement, then finish the transaction
@@ -237,7 +246,7 @@ func (h *Handler) Delete(ctx context.Context, item *resource.Item) error {
 // Clear removes all items matching the lookup and returns the number of items
 // removed as the first value.  If a query operation is not implemented
 // by the storage handler, a resource.ErrNotImplemented is returned.
-func (h *Handler) Clear(ctx context.Context, lookup *resource.Lookup) (int64, error) {
+func (h *Handler) Clear(ctx context.Context, lookup *resource.Lookup) (int, error) {
 
 	// construct the delete statement from the lookup data
 	s, err := getDelete(h, lookup)
@@ -255,19 +264,23 @@ func (h *Handler) Clear(ctx context.Context, lookup *resource.Lookup) (int64, er
 		log.WithField("error", err).Warn("Error getting row count for clear.")
 		return -1, nil
 	}
-	return ra, nil
+	return int(ra), nil
 }
 
 // getSelect returns a SQL SELECT statement that represents the Lookup data
 func getSelect(h *Handler, l *resource.Lookup, page, perPage int) (string, error) {
-	str := "SELECT * FROM " + h.tableName + " WHERE "
+	str := "SELECT * FROM " + h.tableName
 	q, err := getQuery(l)
 	if err != nil {
 		log.WithField("error", err).Warn("Error building query for select statement.")
 		return "", err
 	}
-	str += q
-	str += " ORDER BY " + getSort(l)
+	if q != "" {
+		str += " WHERE " + q
+	}
+	if l.Sort() != nil {
+		str += " ORDER BY " + getSort(l)
+	}
 
 	if perPage >= 0 {
 		str += fmt.Sprintf(" LIMIT %d", perPage)
@@ -327,17 +340,67 @@ func getInsert(h *Handler, i *resource.Item) (string, error) {
 	return result, nil
 }
 
+// getUpdate returns a SQL INSERT statement constructed from the Item data
+func getUpdate(h *Handler, i *resource.Item, o *resource.Item) (string, error) {
+	var id, oEtag, iEtag, upd string
+	var err error
+
+	id, err = valueToString(o.ID)
+	if err != nil {
+		log.WithField("error", err).Warn("Error converting ID to string.")
+		return "", resource.ErrNotImplemented
+	}
+	oEtag, err = valueToString(o.ETag)
+	if err != nil {
+		log.WithField("error", err).Warn("Error converting original ETag to string.")
+		return "", resource.ErrNotImplemented
+	}
+	iEtag, err = valueToString(i.ETag)
+	if err != nil {
+		log.WithField("error", err).Warn("Error converting new ETag to string.")
+		return "", resource.ErrNotImplemented
+	}
+	upd, err = valueToString(i.Updated)
+	if err != nil {
+		log.WithField("error", err).Warn("Error converting Updated to string.")
+		return "", resource.ErrNotImplemented
+	}
+	a := fmt.Sprintf("UPDATE OR ROLLBACK %s SET etag=%s,updated=%s,", h.tableName, iEtag, upd)
+	z := fmt.Sprintf("WHERE id=%s AND etag=%s;", id, oEtag)
+	for k, v := range i.Payload {
+		if k != "id" {
+			var val string
+			val, err = valueToString(v)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"key":    k,
+					"error": err,
+				}).Warn("Error converting payload value to string.", )
+				return "", resource.ErrNotImplemented
+			}
+			a += fmt.Sprintf("%s=%s,", k, val)
+		}
+
+	}
+	// remove trailing comma
+	a = a[:len(a)-1]
+
+	result := fmt.Sprintf("%s %s", a, z)
+	return result, nil
+}
+
 // newItemList creates a list of resource.Item from a SQL result row slice
 func newItemList(rows []map[string]interface{}, page int) (*resource.ItemList, error) {
 
-	l := &resource.ItemList{Page: page, Total: len(rows), Items: []*resource.Item{}}
-	for _, r := range rows {
-		i, err := newItem(r)
+	items := make([]*resource.Item, len(rows))
+	l := &resource.ItemList{Page: page, Total: len(rows), Items: items}
+	for i, r := range rows {
+		item, err := newItem(r)
 		if err != nil {
 			log.WithField("error", err).Warn("Error creating an Item from a row.")
 			return nil, err
 		}
-		l.Items = append(l.Items, i)
+		items[i] = item
 	}
 	return l, nil
 }
@@ -347,11 +410,19 @@ func newItem(row map[string]interface{}) (*resource.Item, error) {
 	// Add the id back (we use the same map hoping the mongoItem won't be stored back)
 	id := row["id"]
 	etag := row["etag"]
+	created := row["created"]
 	updated := row["updated"]
 	delete(row, "etag")
 	delete(row, "updated")
 
-	t, err := time.Parse("2006-01-02 15:04:05.99999999 -0700 MST", updated.(string))
+	ct, err := time.Parse("2006-01-02 15:04:05.99999999 -0700 MST", created.(string))
+	if err != nil {
+		log.WithField("error", err).Warn("Error parsing updated.")
+		return nil, err
+	}
+	row["created"] = ct
+
+	tu, err := time.Parse("2006-01-02 15:04:05.99999999 -0700 MST", updated.(string))
 	if err != nil {
 		log.WithField("error", err).Warn("Error parsing updated.")
 		return nil, err
@@ -359,7 +430,39 @@ func newItem(row map[string]interface{}) (*resource.Item, error) {
 	return &resource.Item{
 		ID:      id,
 		ETag:    etag.(string),
-		Updated: t,
+		Updated: tu,
 		Payload: row,
 	}, nil
+}
+
+
+func compareEtags(h *Handler, id, origEtag interface{}) error {
+	// query for record with the same id, and return ErrNotFound if we don't find one.
+	var etag string
+	var err error
+	err = h.session.QueryRow(
+		fmt.Sprintf("SELECT etag FROM %s WHERE id='%v'", h.tableName, id)).Scan(&etag)
+	if err != nil {
+		switch {
+		case err.Error() == SQL_NOTFOUND_ERR:
+			return resource.ErrNotFound
+		default:
+			log.WithFields(log.Fields{
+				"id":    id,
+				"error": err,
+			}).Warn("Error querying record to delete.")
+			return err
+		}
+	}
+
+	// compare the etags to ensure that someone else hasn't scooped us.
+	if etag != origEtag {
+		log.WithFields(log.Fields{
+			"id":    id,
+			"error": err,
+		}).Warn("ETag of record does not match the one supplied.")
+		return resource.ErrConflict
+	}
+
+	return nil
 }
