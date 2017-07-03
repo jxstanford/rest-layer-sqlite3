@@ -4,16 +4,14 @@
 package sqlite3
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-
-	"golang.org/x/net/context"
-
-	"github.com/rs/rest-layer/resource"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"time"
-	"github.com/rs/rest-layer/schema"
+	"github.com/rs/rest-layer/resource"
+	"github.com/rs/rest-layer/schema/query"
 )
 
 const (
@@ -37,15 +35,15 @@ func NewHandler(s *sql.DB, tableName string) *Handler {
 // Find searches for items in the backend store matching the lookup argument.
 // If no items are found, an empty list is returned with no error. If a query
 // operation is not implemented, a resource.ErrNotImplemented is returned.
-func (h *Handler) Find(ctx context.Context, lookup *resource.Lookup, page, perPage int) (*resource.ItemList, error) {
+func (h *Handler) Find(ctx context.Context, lookup *resource.Lookup, offset, limit int) (*resource.ItemList, error) {
 	var q string // query string
 	var err error
-	var rows *sql.Rows // query result
-	var cols []string  // column names
+	var rows *sql.Rows                // query result
+	var cols []string                 // column names
 	raw := []map[string]interface{}{} // holds the raw results as a map of columns:values
 
 	// build a paginated select statement based
-	q, err = getSelect(h, lookup, page, perPage)
+	q, err = getSelect(h, lookup, offset, limit)
 	if err != nil {
 		log.WithField("error", err).Warn("Error getting the select statement.")
 		return nil, err
@@ -103,7 +101,7 @@ func (h *Handler) Find(ctx context.Context, lookup *resource.Lookup, page, perPa
 	}
 
 	// return a *resource.ItemList or an error
-	return newItemList(raw, page)
+	return newItemList(raw, offset, limit)
 
 }
 
@@ -154,7 +152,7 @@ func (h *Handler) Update(ctx context.Context, item *resource.Item, original *res
 
 	// get the original item
 	l := resource.NewLookup()
-	q := schema.Query{schema.Equal{Field: "id", Value: original.ID}}
+	q := query.Query{query.Equal{Field: "id", Value: original.ID}}
 	l.AddQuery(q)
 	s, err := getSelect(h, l, 1, 1)
 	if err != nil {
@@ -268,7 +266,7 @@ func (h *Handler) Clear(ctx context.Context, lookup *resource.Lookup) (int, erro
 }
 
 // getSelect returns a SQL SELECT statement that represents the Lookup data
-func getSelect(h *Handler, l *resource.Lookup, page, perPage int) (string, error) {
+func getSelect(h *Handler, l *resource.Lookup, offset, limit int) (string, error) {
 	str := "SELECT * FROM " + h.tableName
 	q, err := getQuery(l)
 	if err != nil {
@@ -282,9 +280,11 @@ func getSelect(h *Handler, l *resource.Lookup, page, perPage int) (string, error
 		str += " ORDER BY " + getSort(l)
 	}
 
-	if perPage >= 0 {
-		str += fmt.Sprintf(" LIMIT %d", perPage)
-		str += fmt.Sprintf(" OFFSET %d", (page-1)*perPage)
+	if limit >= 0 {
+		str += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	if offset > 0 {
+		str += fmt.Sprintf(" OFFSET %d", offset)
 	}
 	str += ";"
 	return str, nil
@@ -325,9 +325,9 @@ func getInsert(h *Handler, i *resource.Item) (string, error) {
 		val, err = valueToString(v)
 		if err != nil {
 			log.WithFields(log.Fields{
-				"key":    k,
+				"key":   k,
 				"error": err,
-			}).Warn("Error converting payload value to string.", )
+			}).Warn("Error converting payload value to string.")
 			return "", resource.ErrNotImplemented
 		}
 		z += val + ","
@@ -373,9 +373,9 @@ func getUpdate(h *Handler, i *resource.Item, o *resource.Item) (string, error) {
 			val, err = valueToString(v)
 			if err != nil {
 				log.WithFields(log.Fields{
-					"key":    k,
+					"key":   k,
 					"error": err,
-				}).Warn("Error converting payload value to string.", )
+				}).Warn("Error converting payload value to string.")
 				return "", resource.ErrNotImplemented
 			}
 			a += fmt.Sprintf("%s=%s,", k, val)
@@ -390,10 +390,9 @@ func getUpdate(h *Handler, i *resource.Item, o *resource.Item) (string, error) {
 }
 
 // newItemList creates a list of resource.Item from a SQL result row slice
-func newItemList(rows []map[string]interface{}, page int) (*resource.ItemList, error) {
-
+func newItemList(rows []map[string]interface{}, offset, limit int) (*resource.ItemList, error) {
 	items := make([]*resource.Item, len(rows))
-	l := &resource.ItemList{Page: page, Total: len(rows), Items: items}
+	l := &resource.ItemList{Offset: offset, Limit: limit, Total: len(rows), Items: items}
 	for i, r := range rows {
 		item, err := newItem(r)
 		if err != nil {
@@ -434,7 +433,6 @@ func newItem(row map[string]interface{}) (*resource.Item, error) {
 		Payload: row,
 	}, nil
 }
-
 
 func compareEtags(h *Handler, id, origEtag interface{}) error {
 	// query for record with the same id, and return ErrNotFound if we don't find one.

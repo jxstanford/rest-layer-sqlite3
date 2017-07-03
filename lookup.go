@@ -2,11 +2,11 @@ package sqlite3
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/rs/rest-layer/resource"
-	"github.com/rs/rest-layer/schema"
-	"time"
-	"strings"
+	"github.com/rs/rest-layer/schema/query"
 )
 
 // getQuery returns the WHERE clause when given a Lookup
@@ -20,14 +20,14 @@ func getSort(l *resource.Lookup) string {
 }
 
 // translateQuery constructs the string representation of the WHERE clause of a SQL query
-func translateQuery(q schema.Query) (string, error) {
+func translateQuery(q query.Query) (string, error) {
 	var str string
 	for _, exp := range q {
 		switch t := exp.(type) {
-		case schema.And:
+		case query.And:
 			var s string
 			for _, subExp := range t {
-				sb, err := translateQuery(schema.Query{subExp})
+				sb, err := translateQuery(query.Query{subExp})
 				if err != nil {
 					return "", err
 				}
@@ -35,10 +35,10 @@ func translateQuery(q schema.Query) (string, error) {
 			}
 			// remove the last " AND "
 			str += "(" + s[:len(s)-5] + ")"
-		case schema.Or:
+		case query.Or:
 			var s string
 			for _, subExp := range t {
-				sb, err := translateQuery(schema.Query{subExp})
+				sb, err := translateQuery(query.Query{subExp})
 				if err != nil {
 					return "", err
 				}
@@ -46,19 +46,19 @@ func translateQuery(q schema.Query) (string, error) {
 			}
 			// remove the last " OR "
 			str += "(" + s[:len(s)-4] + ")"
-		case schema.In:
+		case query.In:
 			v, err := valuesToString(t.Values)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
 			str += t.Field + " IN (" + v + ")"
-		case schema.NotIn:
+		case query.NotIn:
 			v, err := valuesToString(t.Values)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
 			str += t.Field + " NOT IN (" + v + ")"
-		case schema.Equal:
+		case query.Equal:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
@@ -71,7 +71,7 @@ func translateQuery(q schema.Query) (string, error) {
 			default:
 				str += t.Field + " IS " + v
 			}
-		case schema.NotEqual:
+		case query.NotEqual:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
@@ -84,25 +84,25 @@ func translateQuery(q schema.Query) (string, error) {
 			default:
 				str += t.Field + " IS NOT " + v
 			}
-		case schema.GreaterThan:
+		case query.GreaterThan:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
 			str += t.Field + " > " + v
-		case schema.GreaterOrEqual:
+		case query.GreaterOrEqual:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
 			str += t.Field + " >= " + v
-		case schema.LowerThan:
+		case query.LowerThan:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
 			}
 			str += t.Field + " < " + v
-		case schema.LowerOrEqual:
+		case query.LowerOrEqual:
 			v, err := valueToString(t.Value)
 			if err != nil {
 				return "", resource.ErrNotImplemented
@@ -133,7 +133,7 @@ func translateSort(l []string) string {
 }
 
 // valuesToString combines a list of Values into a single comma separated string
-func valuesToString(v []schema.Value) (string, error) {
+func valuesToString(v []query.Value) (string, error) {
 	var str string
 	for _, v := range v {
 		s, err := valueToString(v)
@@ -146,7 +146,7 @@ func valuesToString(v []schema.Value) (string, error) {
 }
 
 // valueToString converts a Value into a type-specific string
-func valueToString(v schema.Value) (string, error) {
+func valueToString(v query.Value) (string, error) {
 	var str string
 	var i interface{} = v
 

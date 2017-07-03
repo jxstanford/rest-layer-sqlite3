@@ -11,19 +11,17 @@
 package sqlite3
 
 import (
+	"database/sql"
+	"fmt"
 	"testing"
 
-	"database/sql"
 	_ "github.com/mattn/go-sqlite3"
-
-	"golang.org/x/net/context"
-
-	"code.google.com/p/go-uuid/uuid"
-
+	"github.com/pborman/uuid"
 	"github.com/rs/rest-layer/resource"
 	"github.com/rs/rest-layer/schema"
+	"github.com/rs/rest-layer/schema/query"
 	. "github.com/smartystreets/goconvey/convey"
-	"fmt"
+	"golang.org/x/net/context"
 )
 
 const (
@@ -56,11 +54,11 @@ func item(f1 string, f2 int) (*resource.Item, error) {
 	return resource.NewItem(p)
 }
 
-func callGetSelect(h *Handler, q schema.Query, s string, v schema.Validator, page, perPage int) (string, error) {
+func callGetSelect(h *Handler, q query.Query, s string, v schema.Validator, offset, limit int) (string, error) {
 	l := resource.NewLookup()
 	l.AddQuery(q)
 	l.SetSort(s, v)
-	return getSelect(h, l, page, perPage)
+	return getSelect(h, l, offset, limit)
 }
 
 // TestModel tests the insert functionality.
@@ -80,12 +78,12 @@ func TestModel(t *testing.T) {
 			Convey("Find should return an item list", func() {
 				l := resource.NewLookup()
 				Convey("Found item should match i1", func() {
-					q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+					q := query.Query{query.Equal{Field: "f1", Value: "foo"}}
 					l.AddQuery(q)
-					result, err := h.Find(context.Background(), l, 1, 10)
+					result, err := h.Find(context.Background(), l, 0, 10)
 					So(err, ShouldBeNil)
 					So(result.Total, ShouldEqual, 1)
-					So(result.Page, ShouldEqual, 1)
+					So(result.Offset, ShouldEqual, 0)
 					So(len(result.Items), ShouldEqual, 1)
 					So(result.Items[0].ID, ShouldEqual, i1.ID)
 					So(result.Items[0].ETag, ShouldEqual, i1.ETag)
@@ -96,12 +94,13 @@ func TestModel(t *testing.T) {
 					//So(result.Items[0].Payload, ShouldResemble, i2.Payload) // fails, existing PR on assertions may fix
 				})
 				Convey("Found item should match i2", func() {
-					q := schema.Query{schema.Equal{Field: "f1", Value: "bar"}}
+					q := query.Query{query.Equal{Field: "f1", Value: "bar"}}
 					l.AddQuery(q)
-					result, err := h.Find(context.Background(), l, 1, 10)
+					result, err := h.Find(context.Background(), l, 0, 10)
 					So(err, ShouldBeNil)
 					So(result.Total, ShouldEqual, 1)
-					So(result.Page, ShouldEqual, 1)
+					So(result.Offset, ShouldEqual, 0)
+					So(result.Limit, ShouldEqual, 10)
 					So(len(result.Items), ShouldEqual, 1)
 					So(result.Items[0].ID, ShouldEqual, i2.ID)
 					So(result.Items[0].ETag, ShouldEqual, i2.ETag)
@@ -127,7 +126,7 @@ func TestModel(t *testing.T) {
 
 			Convey(`Successful clear operations should return the number of affected rows`, func() {
 				l := resource.NewLookup()
-				q := schema.Query{schema.Or{schema.Equal{Field: "f1", Value: "foo"}, schema.Equal{Field: "f1", Value: "bar"}}}
+				q := query.Query{query.Or{query.Equal{Field: "f1", Value: "foo"}, query.Equal{Field: "f1", Value: "bar"}}}
 				l.AddQuery(q)
 				result, err := h.Clear(context.Background(), l)
 				So(err, ShouldBeNil)
@@ -144,20 +143,25 @@ func TestModel(t *testing.T) {
 			})
 
 			Convey("SELECT statements should be correct", func() {
-				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
-				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
-				s, err := callGetSelect(h, q, "-f1,f1", v, 1, -1)
+				q := query.Query{query.Equal{Field: "f1", Value: "foo"}}
+				v := schema.Schema{Fields: schema.Fields{
+					"id": schema.IDField,
+					"f1": schema.Field{Sortable: true},
+				}}
+				s, err := callGetSelect(h, q, "-f1,f1", v, 0, -1)
 				So(err, ShouldBeNil)
 				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\' ORDER BY f1 DESC,f1;")
 			})
 
-
 			Convey("SELECT statements with pagination should be correct", func() {
-				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
-				v := schema.Schema{"id": schema.IDField, "f1": schema.Field{Sortable: true}}
-				s, err := callGetSelect(h, q, "-f1,f1", v, 1, 10)
+				q := query.Query{query.Equal{Field: "f1", Value: "foo"}}
+				v := schema.Schema{Fields: schema.Fields{
+					"id": schema.IDField,
+					"f1": schema.Field{Sortable: true},
+				}}
+				s, err := callGetSelect(h, q, "-f1,f1", v, 0, 10)
 				So(err, ShouldBeNil)
-				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\' ORDER BY f1 DESC,f1 LIMIT 10 OFFSET 0;")
+				So(s, ShouldEqual, "SELECT * FROM "+h.tableName+" WHERE f1 LIKE 'foo' ESCAPE '\\' ORDER BY f1 DESC,f1 LIMIT 10;")
 			})
 
 			Convey("UPDATE statements should be correct", func() {
@@ -178,7 +182,7 @@ func TestModel(t *testing.T) {
 			})
 
 			Convey("DELETE statements should be correct", func() {
-				q := schema.Query{schema.Equal{Field: "f1", Value: "foo"}}
+				q := query.Query{query.Equal{Field: "f1", Value: "foo"}}
 				So(err, ShouldBeNil)
 				s, err := callGetDelete(h, q)
 				So(err, ShouldBeNil)
@@ -186,7 +190,6 @@ func TestModel(t *testing.T) {
 			})
 
 		})
-
 
 		//Reset(func() {
 		//	_, err = h.session.Exec(DB_DOWN_DDL)
